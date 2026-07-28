@@ -4,6 +4,21 @@ import { prepareTrackDb } from "@/persistence/db"
 
 type StoryDbAction = () => Promise<void>
 
+// Stories share one database, and Storybook unmounts the previous story
+// before mounting the next one. Both seeding and cleanup are async, so
+// without ordering the outgoing story's teardown can land *after* the
+// incoming story's setup and delete the rows it just wrote — the next story
+// then renders against an empty table. Chaining every action through a single
+// queue preserves unmount-then-mount order, whatever the machine's speed.
+let dbActionQueue: Promise<void> = Promise.resolve()
+
+function enqueueDbAction(action: StoryDbAction): Promise<void> {
+  const next = dbActionQueue.then(action, action)
+  // A failing action must not poison the queue for later stories.
+  dbActionQueue = next.catch(() => {})
+  return next
+}
+
 export function usePreparedStoryDb(
   setup: StoryDbAction,
   teardown: StoryDbAction
@@ -15,17 +30,20 @@ export function usePreparedStoryDb(
     let setupCompleted = false
 
     const initialize = async () => {
-      await prepareTrackDb()
+      await enqueueDbAction(async () => {
+        await prepareTrackDb()
+        if (disposed) return
+        await setup()
+        if (disposed) {
+          // Unmounted while seeding: the cleanup already ran and saw no
+          // completed setup, so undo it here — still inside the queue.
+          await teardown()
+          return
+        }
+        setupCompleted = true
+      })
+
       if (disposed) return
-
-      await setup()
-      setupCompleted = true
-
-      if (disposed) {
-        await teardown()
-        return
-      }
-
       setIsReady(true)
     }
 
@@ -35,7 +53,7 @@ export function usePreparedStoryDb(
       disposed = true
 
       if (setupCompleted) {
-        void teardown()
+        void enqueueDbAction(teardown)
       }
     }
   }, [setup, teardown])
