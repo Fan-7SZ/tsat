@@ -1,0 +1,79 @@
+name: E2E & Coverage
+
+# The merge gate's heavy half: unit + storybook + the CI e2e subset (every
+# spec except the ~10-minute two-months simulation — measured within ~1pt of
+# full-suite coverage), merged three-layer coverage with the threshold gate,
+# and the badge refresh on main. The FULL suite incl. two-months is a local
+# script only: `npm run test:e2e` / `npm run test:e2e:coverage`.
+on:
+  push:
+    branches: [main]
+  # REQUIRED check (per the main Ruleset): gates every merge together with
+  # the coverage threshold. The badge still only refreshes from main runs.
+  pull_request:
+    branches: [main]
+
+# A newer push supersedes a still-running check of the same ref; PR reruns
+# never cancel a main run.
+concurrency:
+  group: e2e-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-coverage:
+    name: E2E & merged coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # unit + storybook projects, istanbul coverage
+      - run: npx vitest run --coverage
+      # instrumented e2e, two-months excluded (writes coverage/e2e/*.json)
+      - run: npm run test:e2e:ci
+      # merge + threshold gate (exits 1 below the floor)
+      - run: npm run coverage:merge
+      # Badge reflects the LATEST main commit even when the threshold gate
+      # fails (merged json is written before the gate exits 1) — the run
+      # itself still goes red. Skipped when no merged report exists.
+      - name: Read merged coverage percentage
+        id: coverage
+        if: ${{ always() && hashFiles('coverage/merged/coverage-final.json') != '' }}
+        run: |
+          PCT=$(node -e "
+            const lib = require('istanbul-lib-coverage');
+            const map = lib.createCoverageMap(require('./coverage/merged/coverage-final.json'));
+            console.log(map.getCoverageSummary().statements.pct.toFixed(1));
+          ")
+          echo "pct=$PCT" >> "$GITHUB_OUTPUT"
+      # Coverage badge data lives in a gist (see docs/internal/ci-testing-plan.md).
+      # Requires the GIST_SECRET secret (a PAT with gist scope) and the gist id
+      # below; the step is skipped until both exist.
+      - name: Update coverage badge
+        if: ${{ always() && github.ref == 'refs/heads/main' && steps.coverage.outputs.pct != '' && env.BADGE_GIST_ID != '' }}
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_SECRET }}
+          gistID: ${{ env.BADGE_GIST_ID }}
+          filename: tsat-coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.pct }}%
+          minColorRange: 50
+          maxColorRange: 90
+          valColorRange: ${{ steps.coverage.outputs.pct }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-merged
+          path: coverage/merged/
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-report
+          path: playwright-report/
+
+env:
+  # Badge data gist (see docs/internal/ci-testing-plan.md §4)
+  BADGE_GIST_ID: "2c017cb747addc17542bbd54b65e1905"
