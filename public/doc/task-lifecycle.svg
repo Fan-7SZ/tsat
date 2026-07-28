@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" width="760" height="400" role="img" aria-label="Task lifecycle: Todo, In Progress and Done, each reachable from the others. Completing a task adds one to its progress; moving back off Done takes one away.">
+  <title>Task lifecycle</title>
+
+  <!--
+    Standalone copy of DocLifecycleDiagram. Colours mirror the app's theme tokens
+    and are carried inside the file, so it still follows light/dark on its own —
+    a baked-in PNG could not. Fonts fall back to the host's UI stack.
+  -->
+  <style>
+    .bg      { fill: oklch(1 0 0); }
+    .node-fg { fill: oklch(0.145 0 0); }
+    .todo-f  { fill: oklch(0.97 0 0); }
+    .todo-s  { stroke: oklch(0.556 0 0 / 0.4); }
+    .prog-f  { fill: #f59e0b1a; }
+    .prog-s  { stroke: #f59e0b99; }
+    .done-f  { fill: #16a34a1a; }
+    .done-s  { stroke: #16a34a99; }
+
+    .adv-s   { stroke: #16a34a; }
+    .adv-f   { fill: #15803d; }
+    .adv-m   { fill: #16a34a; }
+    .ret-s   { stroke: oklch(0.58 0.22 27); }
+    .ret-f   { fill: oklch(0.58 0.22 27); }
+    .ret-m   { fill: oklch(0.58 0.22 27); }
+    .neu-s   { stroke: oklch(0.556 0 0 / 0.6); }
+    .neu-f   { fill: oklch(0.556 0 0); }
+    .neu-m   { fill: oklch(0.556 0 0 / 0.6); }
+
+    .label {
+      font: 13px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      stroke: oklch(1 0 0);
+      stroke-width: 5;
+      paint-order: stroke;
+    }
+    .node-label {
+      font: 500 15px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .edge { fill: none; stroke-linecap: round; }
+
+    @media (prefers-color-scheme: dark) {
+      .bg      { fill: oklch(0.145 0 0); }
+      .node-fg { fill: oklch(0.985 0 0); }
+      .todo-f  { fill: oklch(0.269 0 0); }
+      .todo-s  { stroke: oklch(0.708 0 0 / 0.4); }
+      .adv-s   { stroke: #22c55e; }
+      .adv-f   { fill: #22c55e; }
+      .adv-m   { fill: #22c55e; }
+      .ret-s   { stroke: oklch(0.704 0.191 22.216); }
+      .ret-f   { fill: oklch(0.704 0.191 22.216); }
+      .ret-m   { fill: oklch(0.704 0.191 22.216); }
+      .neu-s   { stroke: oklch(0.708 0 0 / 0.6); }
+      .neu-f   { fill: oklch(0.708 0 0); }
+      .neu-m   { fill: oklch(0.708 0 0 / 0.6); }
+      .label   { stroke: oklch(0.145 0 0); }
+    }
+  </style>
+
+  <defs>
+    <!-- One marker per tone: a marker cannot reliably inherit its line's stroke. -->
+    <marker id="arrow-advance" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="adv-m" />
+    </marker>
+    <marker id="arrow-retract" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="ret-m" />
+    </marker>
+    <marker id="arrow-neutral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="neu-m" />
+    </marker>
+  </defs>
+
+  <!-- Own canvas: standing alone there is no page behind it, and the label halos
+       are painted in this same colour to knock the connectors out. -->
+  <rect class="bg" x="0" y="0" width="760" height="400" />
+
+  <!-- Todo <-> In Progress -->
+  <line class="edge neu-s" x1="125.6" y1="288.7" x2="337.8" y2="84.1" stroke-width="1.75" marker-end="url(#arrow-neutral)" />
+  <text class="label neu-f" x="219" y="176" text-anchor="middle">Start</text>
+  <line class="edge neu-s" x1="354.4" y1="101.3" x2="142.2" y2="305.9" stroke-width="1.75" marker-end="url(#arrow-neutral)" />
+  <text class="label neu-f" x="262" y="220" text-anchor="middle">Back</text>
+
+  <!-- In Progress <-> Done -->
+  <line class="edge adv-s" x1="422.2" y1="84.1" x2="634.4" y2="288.7" stroke-width="2.5" marker-end="url(#arrow-advance)" />
+  <text class="label adv-f" x="541" y="176" text-anchor="middle">Complete +1</text>
+  <line class="edge ret-s" x1="617.8" y1="305.9" x2="405.6" y2="101.3" stroke-width="1.75" marker-end="url(#arrow-retract)" />
+  <text class="label ret-f" x="499" y="220" text-anchor="middle">Back −1</text>
+
+  <!-- Todo <-> Done: the shortcut a linear chain hides -->
+  <line class="edge adv-s" x1="184" y1="317" x2="576" y2="317" stroke-width="2.5" marker-end="url(#arrow-advance)" />
+  <text class="label adv-f" x="380" y="307" text-anchor="middle">Mark done +1</text>
+  <line class="edge ret-s" x1="576" y1="343" x2="184" y2="343" stroke-width="1.75" marker-end="url(#arrow-retract)" />
+  <text class="label ret-f" x="380" y="360" text-anchor="middle">Back −1</text>
+
+  <!-- Nodes -->
+  <g>
+    <rect class="prog-f prog-s" x="310" y="37" width="140" height="46" rx="12" stroke-width="1.75" />
+    <text class="node-label node-fg" x="380" y="65" text-anchor="middle">In Progress</text>
+  </g>
+  <g>
+    <rect class="todo-f todo-s" x="30" y="307" width="140" height="46" rx="12" stroke-width="1.75" />
+    <text class="node-label node-fg" x="100" y="335" text-anchor="middle">Todo</text>
+  </g>
+  <g>
+    <rect class="done-f done-s" x="590" y="307" width="140" height="46" rx="12" stroke-width="1.75" />
+    <text class="node-label node-fg" x="660" y="335" text-anchor="middle">Done</text>
+  </g>
+</svg>
