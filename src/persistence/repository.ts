@@ -3,7 +3,10 @@ import { db, type AppMetaRow, type SyncReadCacheRow } from "./db"
 import type { GoalEntity } from "@/domain/entities/GoalEntity"
 import type { TaskGroupEntity } from "@/domain/entities/TaskGroupEntity"
 import type { DependencyEntity } from "@/domain/entities/DependencyEntity"
-import type { ActivityEntity } from "@/domain/entities/ActivityEntity"
+import {
+  createStableActivityId,
+  type ActivityEntity,
+} from "@/domain/entities/ActivityEntity"
 import type {
   GoalID,
   TaskID,
@@ -40,6 +43,7 @@ import {
   appendFloatingTaskNode,
   removeTaskNodeFromTree,
 } from "@/utils/dependency-tree-migration"
+import { selectCrossDayCarryOver } from "@/utils/cross-day-sweep"
 
 // ── Date helpers ──────────────────────────────────────────
 // Dexie stores plain objects; Date fields become strings after round-trip.
@@ -258,21 +262,6 @@ async function stampWritten(table: SyncTable, id: string): Promise<void> {
     updatedAt: Date.now(),
     deletedAt: null,
   })
-}
-
-async function stampWrittenMany(
-  table: SyncTable,
-  ids: string[]
-): Promise<void> {
-  if (ids.length === 0) return
-  const now = Date.now()
-  await db.recordMeta.bulkPut(
-    ids.map((id) => ({
-      key: recordMetaKey(table, id),
-      updatedAt: now,
-      deletedAt: null,
-    }))
-  )
 }
 
 async function stampDeleted(table: SyncTable, id: string): Promise<void> {
@@ -764,6 +753,33 @@ export interface RunMutation {
 }
 
 /**
+ * Re-derives one task's `completedCount` from its records, inside the caller's
+ * transaction. Same projection as {@link recomputeCompletedCount} — repeat tasks
+ * count their completed ledger points, all others their `task-done` activities —
+ * but it writes only when the value actually moved, so an untouched task keeps
+ * its LWW clock and a deletion made on another device still wins the merge.
+ * Callers must include tasks / activities / repeatLedgers / recordMeta in scope.
+ */
+async function recomputeCompletedCountInTx(taskId: TaskID): Promise<void> {
+  const task = await db.tasks.get(taskId)
+  if (!task) return
+  let count: number
+  if (task.repeat != null) {
+    const ledger = await db.repeatLedgers.get(taskId)
+    count = ledger
+      ? Object.values(ledger.points).filter((s) => s === "completed").length
+      : 0
+  } else {
+    const acts = await db.activities.where("taskId").equals(taskId).toArray()
+    count = acts.filter((a) => a.kind === "task-done").length
+  }
+  if (count !== task.completedCount) {
+    await db.tasks.update(taskId, { completedCount: count })
+    await stampWritten("tasks", taskId)
+  }
+}
+
+/**
  * Applies a run mutation in one transaction. This is what keeps the
  * completedCount invariant safe: a run flipping to done commits together with
  * its activity, counter patch and ledger point — or not at all.
@@ -822,26 +838,7 @@ export async function applyRunMutation(m: RunMutation): Promise<void> {
       }
       // Re-derive completedCount from the records just written (same tx).
       for (const taskId of m.recomputeCompletedCountFor ?? []) {
-        const task = await db.tasks.get(taskId)
-        if (!task) continue
-        let count: number
-        if (task.repeat != null) {
-          const ledger = await db.repeatLedgers.get(taskId)
-          count = ledger
-            ? Object.values(ledger.points).filter((s) => s === "completed")
-                .length
-            : 0
-        } else {
-          const acts = await db.activities
-            .where("taskId")
-            .equals(taskId)
-            .toArray()
-          count = acts.filter((a) => a.kind === "task-done").length
-        }
-        if (count !== task.completedCount) {
-          await db.tasks.update(taskId, { completedCount: count })
-          await stampWritten("tasks", taskId)
-        }
+        await recomputeCompletedCountInTx(taskId)
       }
     }
   )
@@ -1626,6 +1623,8 @@ export async function applyTriggerResetAtomic(
     [
       db.goals,
       db.tasks,
+      db.activities,
+      db.repeatLedgers,
       db.goalTriggerStates,
       db.manualFocuses,
       db.recordMeta,
@@ -1638,21 +1637,12 @@ export async function applyTriggerResetAtomic(
         if ((await db.goals.get(reset.goalId)) == null) continue
 
         // The tasks to reset are derived HERE, inside the transaction, never
-        // taken from the caller: only tasks currently under the goal AND with
-        // a non-zero counter are written and stamped. Stamping an untouched
-        // task is a no-op locally but bumps its LWW clock, so a device firing
-        // before it pulled another device's deletion would resurrect the
-        // deleted task at the next sync merge.
-        const staleTaskIds = (
+        // taken from the caller: only tasks currently under the goal.
+        const goalTaskIds = (
           await db.tasks.where("goalId").equals(reset.goalId).toArray()
-        )
-          .filter((task) => task.completedCount !== 0)
-          .map((task) => task.id)
+        ).map((task) => task.id)
 
         await Promise.all([
-          ...staleTaskIds.map((taskId) =>
-            db.tasks.update(taskId, { completedCount: 0 })
-          ),
           db.goals.update(reset.goalId, { dueAt: reset.dueAt }),
           db.goalTriggerStates.put({
             goalId: reset.goalId,
@@ -1669,13 +1659,76 @@ export async function applyTriggerResetAtomic(
             source: "trigger",
           }),
         ])
-        await stampWrittenMany("tasks", staleTaskIds)
         await stampWritten("goals", reset.goalId)
         await stampWritten("goalTriggerStates", reset.goalId)
         await stampWritten("manualFocuses", reset.goalId)
+
+        // A fired goal trigger starts a NEW round for its tasks, so the
+        // previous rounds' completion records are dropped and the counter is
+        // re-derived from what is left — rather than blanket-zeroed, which
+        // contradicted the projection and let any later recompute resurrect an
+        // old round's count. Only records dated BEFORE this round go: a record
+        // already carrying this round's dateKey belongs to it (another device
+        // may have completed the task before this one got round to firing), and
+        // deleting by wall clock instead of by date would silently swallow it.
+        for (const taskId of goalTaskIds) {
+          const staleActivityIds = (
+            await db.activities.where("taskId").equals(taskId).toArray()
+          )
+            .filter(
+              (activity) =>
+                activity.kind === "task-done" &&
+                activity.recordedDateKey < reset.lastTriggeredDateKey
+            )
+            .map((activity) => activity.id)
+
+          if (staleActivityIds.length > 0) {
+            await db.activities.bulkDelete(staleActivityIds)
+            await stampDeletedMany("activities", staleActivityIds)
+          }
+          await recomputeCompletedCountInTx(taskId)
+        }
       }
     }
   )
+}
+
+/**
+ * Drops the fired tasks' runs, with the same carry-over exception the day
+ * boundary honours (see `selectCrossDayCarryOver`): a non-repeat task that opted
+ * into `allowCrossDay` and is still `inProgress` keeps its run across the fire.
+ * Every dropped run also takes its `task-in-progress` activity with it —
+ * otherwise the activity stream keeps showing a run that no longer exists.
+ */
+async function deleteDayRunsForTriggerReset(taskIds: TaskID[]): Promise<void> {
+  if (taskIds.length === 0) return
+
+  const runs = await db.dayRuns.where("taskId").anyOf(taskIds).toArray()
+  if (runs.length === 0) return
+
+  const tasks = (await db.tasks.bulkGet(taskIds)).filter(
+    (task): task is TaskGroupEntity => task != null
+  )
+  const { taskRuntime: carryOverRuns } = selectCrossDayCarryOver({
+    tasks,
+    taskRuntime: Object.fromEntries(runs.map((run) => [run.id, run])),
+  })
+
+  for (const run of runs) {
+    if (carryOverRuns[run.id]) continue
+
+    await db.dayRuns.delete(run.id)
+    await stampDeleted("dayRuns", run.id)
+
+    const inProgressActivityId = createStableActivityId(
+      "task-in-progress",
+      run.id
+    )
+    if ((await db.activities.get(inProgressActivityId)) != null) {
+      await db.activities.delete(inProgressActivityId)
+      await stampDeleted("activities", inProgressActivityId)
+    }
+  }
 }
 
 /**
@@ -1695,6 +1748,8 @@ export async function applyDailyTriggerResetsAtomic(params: {
     [
       db.goals,
       db.tasks,
+      db.activities,
+      db.repeatLedgers,
       db.goalTriggerStates,
       db.taskTriggerStates,
       db.manualFocuses,
@@ -1708,7 +1763,7 @@ export async function applyDailyTriggerResetsAtomic(params: {
       if (params.taskResets.length > 0) {
         await applyTaskTriggerResetAtomic(params.taskResets)
       }
-      await deleteDayRunsByTasks(params.resetTaskIds)
+      await deleteDayRunsForTriggerReset(params.resetTaskIds)
     }
   )
 }

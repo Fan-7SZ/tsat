@@ -6,6 +6,8 @@ import type { GoalTriggerConfig } from "@/domain/entities/GoalEntity"
 import type { TaskTriggerConfig } from "@/domain/entities/TaskGroupEntity"
 import { db } from "@/persistence/db"
 import {
+  applyDailyTriggerResetsAtomic,
+  applyRunMutation,
   applyTaskTriggerResetAtomic,
   applyTriggerResetAtomic,
   createGoalWithTriggerAtomic,
@@ -14,6 +16,7 @@ import {
   deleteTask,
   deleteTaskTriggerAtomic,
   deleteTaskTriggerState,
+  putActivity,
   putDep,
   putGoal,
   putRepeatLedger,
@@ -27,10 +30,12 @@ import {
   dk,
   expectLiveMeta,
   expectTombstone,
+  makeActivity,
   makeDep,
   makeGoal,
   makeGoalTaskTree,
   makeLedger,
+  makeRun,
   makeTask,
   resetDb,
 } from "./helpers"
@@ -399,6 +404,144 @@ describe("applyTriggerResetAtomic", () => {
     expect(await db.goalTriggerStates.get("gone")).toBeUndefined()
     expect(await db.manualFocuses.get("gone")).toBeUndefined()
     expect(await db.recordMeta.get("goals:gone")).toBeUndefined()
+  })
+
+  it("drops the previous rounds' completion records so the count cannot come back", async () => {
+    await putGoal(makeGoal("g1"))
+    await putTask(makeTask("t1", { goalId: "g1", completedCount: 1 }))
+    // A round completed under its own run id — the shape that used to survive
+    // the reset and be counted again by the next recompute.
+    await putActivity(
+      makeActivity("act::task-done::t1::run::2026-07-25::1", "t1", {
+        runtimeId: "t1::run::2026-07-25::1",
+        recordedDateKey: dk("2026-07-25"),
+      })
+    )
+    await putActivity(
+      makeActivity("act::task-in-progress::t1", "t1", {
+        kind: "task-in-progress",
+        recordedDateKey: dk("2026-07-25"),
+      })
+    )
+
+    await applyTriggerResetAtomic([
+      { goalId: "g1", dueAt: undefined, lastTriggeredDateKey: dk("2026-07-26") },
+    ])
+
+    expect((await db.tasks.get("t1"))?.completedCount).toBe(0)
+    expect(
+      await db.activities.get("act::task-done::t1::run::2026-07-25::1")
+    ).toBeUndefined()
+    await expectTombstone("activities:act::task-done::t1::run::2026-07-25::1")
+    // Only completion records are dropped; the run's own history is not.
+    expect(await db.activities.get("act::task-in-progress::t1")).toBeDefined()
+
+    // Completing once in the new round lands on 1, not 2.
+    await applyRunMutation({
+      putActivities: [makeActivity("act::task-done::t1", "t1", { recordedDateKey: dk("2026-07-26") })],
+      recomputeCompletedCountFor: ["t1"],
+    })
+    expect((await db.tasks.get("t1"))?.completedCount).toBe(1)
+  })
+
+  it("keeps a completion already dated in the round being started", async () => {
+    await putGoal(makeGoal("g1"))
+    await putTask(makeTask("t1", { goalId: "g1", completedCount: 0 }))
+    // Another device fired first and the task was completed there; this device
+    // fires later the same day and must not swallow that completion.
+    await putActivity(
+      makeActivity("act::task-done::t1", "t1", {
+        recordedDateKey: dk("2026-07-26"),
+      })
+    )
+
+    await applyTriggerResetAtomic([
+      { goalId: "g1", dueAt: undefined, lastTriggeredDateKey: dk("2026-07-26") },
+    ])
+
+    expect(await db.activities.get("act::task-done::t1")).toBeDefined()
+    expect((await db.tasks.get("t1"))?.completedCount).toBe(1)
+  })
+})
+
+describe("applyDailyTriggerResetsAtomic", () => {
+  it("keeps a cross-day run in progress and clears the rest with their in-progress records", async () => {
+    await putGoal(makeGoal("g1", { trigger: dailyTrigger }))
+    await putTask(makeTask("t-carry", { goalId: "g1", allowCrossDay: true }))
+    await putTask(makeTask("t-plain", { goalId: "g1" }))
+    await putTask(makeTask("t-idle", { goalId: "g1", allowCrossDay: true }))
+
+    await db.dayRuns.bulkPut([
+      makeRun("t-carry", "t-carry", "2026-07-25", {
+        arrangementStatus: "inProgress",
+      }),
+      makeRun("t-plain", "t-plain", "2026-07-25", {
+        arrangementStatus: "inProgress",
+      }),
+      // allowCrossDay but not in progress: no carry-over.
+      makeRun("t-idle", "t-idle", "2026-07-25"),
+    ])
+    await putActivity(
+      makeActivity("act::task-in-progress::t-carry", "t-carry", {
+        kind: "task-in-progress",
+      })
+    )
+    await putActivity(
+      makeActivity("act::task-in-progress::t-plain", "t-plain", {
+        kind: "task-in-progress",
+      })
+    )
+
+    await applyDailyTriggerResetsAtomic({
+      goalResets: [
+        { goalId: "g1", dueAt: undefined, lastTriggeredDateKey: dk("2026-07-26") },
+      ],
+      taskResets: [],
+      resetTaskIds: ["t-carry", "t-plain", "t-idle"],
+    })
+
+    expect(await db.dayRuns.get("t-carry")).toBeDefined()
+    expect(await db.activities.get("act::task-in-progress::t-carry")).toBeDefined()
+    expect(await db.dayRuns.get("t-plain")).toBeUndefined()
+    expect(await db.dayRuns.get("t-idle")).toBeUndefined()
+    expect(
+      await db.activities.get("act::task-in-progress::t-plain")
+    ).toBeUndefined()
+    await expectTombstone("activities:act::task-in-progress::t-plain")
+    await expectTombstone("dayRuns:t-plain")
+  })
+
+  it("leaves a task trigger's cumulative progress and records untouched", async () => {
+    await putGoal(makeGoal("g1"))
+    await putTask(
+      makeTask("t1", {
+        goalId: "g1",
+        trigger: taskTrigger,
+        total: 4,
+        completedCount: 2,
+      })
+    )
+    await putActivity(
+      makeActivity("act::task-done::t1::run::2026-07-20::1", "t1", {
+        runtimeId: "t1::run::2026-07-20::1",
+        recordedDateKey: dk("2026-07-20"),
+      })
+    )
+    await putActivity(
+      makeActivity("act::task-done::t1::run::2026-07-22::1", "t1", {
+        runtimeId: "t1::run::2026-07-22::1",
+        recordedDateKey: dk("2026-07-22"),
+      })
+    )
+
+    await applyDailyTriggerResetsAtomic({
+      goalResets: [],
+      taskResets: [{ taskId: "t1", lastTriggeredDateKey: dk("2026-07-26") }],
+      resetTaskIds: ["t1"],
+    })
+
+    expect((await db.tasks.get("t1"))?.completedCount).toBe(2)
+    expect(await db.activities.where("taskId").equals("t1").count()).toBe(2)
   })
 })
 
