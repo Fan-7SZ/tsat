@@ -1,7 +1,7 @@
 import { test, expect } from "./fixtures"
 import { bootAuto, auto } from "./helpers/harness"
 import { navigate, switchHomeTab } from "./helpers/actions"
-import { click, rightClickMenu } from "./helpers/mouse"
+import { click, rightClickMenu, waitForOverlaysGone } from "./helpers/mouse"
 
 /**
  * Grand-tour spec: visit every route in src/router/routes.tsx and open every
@@ -48,6 +48,9 @@ async function selectTab(
   page: import("@playwright/test").Page,
   name: string
 ): Promise<void> {
+  // A just-closed dialog can still hold the page inert, which hides every
+  // role-based locator from the accessibility tree.
+  await waitForOverlaysGone(page)
   const tab = page.getByRole("tab", { name })
   for (let attempt = 0; attempt < 3; attempt++) {
     await retryClick(page, tab)
@@ -150,6 +153,7 @@ test("tours every main-app page and its major dialogs", async ({ page }) => {
 
   await page.keyboard.press("Escape")
   await expect(page.locator('[data-testid="create-task-title"]')).toHaveCount(0)
+  await waitForOverlaysGone(page)
 
   // ── My Goals ─────────────────────────────────────────────────────────
   await navigate(page, "myGoals")

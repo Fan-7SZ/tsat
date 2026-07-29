@@ -49,6 +49,31 @@ export async function doubleClick(page: Page, locator: Locator): Promise<void> {
 }
 
 /**
+ * Wait until no modal overlay still holds the page inert.
+ *
+ * A Radix dialog marks the app root `aria-hidden` and freezes body
+ * pointer-events while it is open, and restores both only after its exit
+ * animation. The content unmounts first, so a test that continues as soon as
+ * the dialog's DOM is gone can hit a page that ignores clicks and, worse,
+ * whose elements are still outside the accessibility tree — role-based
+ * locators find nothing at all there, while CSS ones still match.
+ */
+export async function waitForOverlaysGone(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            getComputedStyle(document.body).pointerEvents === "none" ||
+            document.getElementById("root")?.getAttribute("aria-hidden") ===
+              "true"
+        ),
+      { timeout: 10_000 }
+    )
+    .toBe(false)
+}
+
+/**
  * Right-click a trigger, then left-click a menu item (both pure mouse). Waits
  * for the Radix menu item to render before clicking, and for it to detach after.
  */
