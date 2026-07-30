@@ -71,7 +71,8 @@ const goalTask: TaskGroupEntity = {
   completedCount: 0,
 }
 
-// A finished task under the same goal — excluded (completedCount >= total).
+// A task finished in THIS round of the goal trigger: it leaves today's cell,
+// but every later fire resets the counter, so those days still count it.
 const doneGoalTaskId = "task-of-goal-done" as TaskID
 const doneGoalTask: TaskGroupEntity = {
   id: doneGoalTaskId,
@@ -117,11 +118,12 @@ describe("computePressureByDay", () => {
   })
 
   it("counts trigger fires later in the window", () => {
-    // 06-21: task trigger(45m) + goal trigger task(20m) = count 2
+    // 06-21: task trigger(45m) + goal trigger tasks(20m + 99m) = count 3. The
+    // task finished this round is back, because 06-21's fire resets it.
     const day = at("2026-06-21")
-    expect(day.count).toBe(2)
-    expect(day.minutes).toBe(65)
-    expect(day.items).toHaveLength(2)
+    expect(day.count).toBe(3)
+    expect(day.minutes).toBe(164)
+    expect(day.items).toHaveLength(3)
   })
 
   it("records goal-trigger contributions per task with goal metadata", () => {
@@ -137,9 +139,12 @@ describe("computePressureByDay", () => {
     })
   })
 
-  it("excludes finished tasks from goal triggers", () => {
-    const titles = at("2026-06-14").items.map((i) => i.title)
-    expect(titles).not.toContain("Already done")
+  it("drops a task finished this round from today only", () => {
+    expect(at("2026-06-14").items.map((i) => i.title)).not.toContain(
+      "Already done"
+    )
+    // The next fire re-opens it, so the forecast keeps showing it.
+    expect(at("2026-06-21").items.map((i) => i.title)).toContain("Already done")
   })
 
   it("excludes past planned points", () => {
@@ -172,6 +177,32 @@ describe("computePressureByDay", () => {
     })
 
     expect(Object.keys(orphaned)).toHaveLength(0)
+  })
+
+  it("a fully finished trigger goal leaves the whole window empty of its heat", () => {
+    // Regression: the goal's only task done → today drops it, and with no later
+    // fire in range nothing is left. Never let this blank out a live forecast.
+    const oneShotGoalId = "goal-one-shot" as GoalID
+    const oneShot = computePressureByDay({
+      tasks: {
+        [goalTaskId]: { ...goalTask, goalId: oneShotGoalId, completedCount: 1 },
+      },
+      goals: {
+        [oneShotGoalId]: {
+          id: oneShotGoalId,
+          title: "One shot",
+          createdAt: new Date("2026-06-14T00:00:00"),
+          trigger: {
+            rule: { mode: "custom", date: [new Date("2026-06-14T00:00:00")] },
+          },
+        },
+      },
+      repeatLedger: {},
+      now: NOW,
+      days: 14,
+    })
+
+    expect(Object.keys(oneShot)).toHaveLength(0)
   })
 
   it("excludes finished tasks from their own trigger", () => {
@@ -341,5 +372,59 @@ describe("computePressureByDay due contributions", () => {
   it("hides dues beyond the forecast horizon", () => {
     expect(at("2026-06-30")).toBeUndefined()
     expect(at("2026-07-05")).toBeUndefined()
+  })
+})
+
+// A trigger goal's dueAt is written by each fire (= the day before the next
+// one), so it is a fact on the day it lands on and a forecast on any other. The
+// due channel reports today's actual dues plus the user's hand-set ones, so the
+// derived due counts only while it is today's.
+describe("computePressureByDay due contributions for trigger goals", () => {
+  const triggerGoalId = "goal-trigger-due" as GoalID
+  const openTaskId = "task-under-trigger-goal" as TaskID
+
+  function computeWithGoalDue(dueAt: Date) {
+    return computePressureByDay({
+      tasks: {
+        [openTaskId]: {
+          id: openTaskId,
+          title: "Open task",
+          goalId: triggerGoalId,
+          createdAt: new Date("2026-06-01T09:00:00"),
+          total: 1,
+          completedCount: 0,
+        },
+      },
+      goals: {
+        [triggerGoalId]: {
+          id: triggerGoalId,
+          title: "Triggered goal",
+          createdAt: new Date("2026-06-14T00:00:00"),
+          // Weekly cadence: a fire on 06-14 stamps its due on 06-20.
+          trigger: { rule: { mode: "weekly", interval: 1, daysOfWeek: [0] } },
+          dueAt,
+        },
+      },
+      repeatLedger: {},
+      now: NOW,
+      days: 14,
+    })
+  }
+
+  it("keeps the derived due when it is today's", () => {
+    const result = computeWithGoalDue(new Date("2026-06-14T23:59:00"))
+    expect(result["2026-06-14" as LocalDateKey].due).toEqual([
+      {
+        kind: "goal",
+        id: triggerGoalId,
+        title: "Triggered goal",
+        timeLabel: "23:59",
+      },
+    ])
+  })
+
+  it("does not forecast the derived due onto a later day", () => {
+    const result = computeWithGoalDue(new Date("2026-06-20T23:59:00"))
+    expect(result["2026-06-20" as LocalDateKey]?.due ?? []).toEqual([])
   })
 })
