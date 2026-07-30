@@ -154,15 +154,49 @@ describe("projection ↔ actual fire mechanism contract", () => {
     expect(projection!.fires).toEqual(simulateTaskFires(task, horizonDays()))
   })
 
-  it("projects nothing for a finished task or one without a trigger", () => {
+  it("a goal-trigger task finished this round drops today but keeps later fires", () => {
+    // The fire starts a new round (it drops the previous rounds' completion
+    // records), so "finished" is a today-only state — the forecast must survive.
+    const goal = makeGoal({ mode: "daily", interval: 1 })
+    const open = projectUpcomingTriggerFires({
+      task: makeTask(),
+      goal,
+      now,
+      days: HORIZON_DAYS,
+    })!
+    const finished = projectUpcomingTriggerFires({
+      task: makeTask({ completedCount: 1 }),
+      goal,
+      now,
+      days: HORIZON_DAYS,
+    })!
+
+    expect(open.fires).toContain("2026-05-13")
+    expect(finished.fires).not.toContain("2026-05-13")
+    expect(finished.fires).toEqual(
+      open.fires.filter((dateKey) => dateKey !== "2026-05-13")
+    )
+    expect(finished.fires.length).toBeGreaterThan(0)
+  })
+
+  it("a finished task trigger projects nothing — its progress is cumulative", () => {
+    // applyTaskTriggerResetAtomic records only lastTriggeredDateKey; the counter
+    // is never reset, so a finished task trigger is finished for good.
     expect(
       projectUpcomingTriggerFires({
-        task: makeTask({ completedCount: 1 }),
-        goal: makeGoal({ mode: "daily", interval: 1 }),
+        task: makeTask({
+          goalId: undefined,
+          completedCount: 1,
+          trigger: { rule: { mode: "daily", interval: 1 } },
+        }),
+        goal: undefined,
         now,
         days: HORIZON_DAYS,
       })
     ).toBeNull()
+  })
+
+  it("projects nothing for a task with no trigger at all", () => {
     expect(
       projectUpcomingTriggerFires({
         task: makeTask({ goalId: undefined }),

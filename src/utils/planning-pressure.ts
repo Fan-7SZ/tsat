@@ -20,9 +20,9 @@ export interface PressureContribution {
   goalId?: GoalID
   /** Owning goal title; undefined → UI groups under "no goal". */
   goalTitle?: string
-  /** Contributing task; undefined for goalTrigger (no specific task). */
+  /** The task pulled up — a goal trigger emits one contribution per task. */
   taskId?: TaskID
-  /** task.title; goalTrigger uses the goal's title. */
+  /** The task's title (goal triggers included — the goal is in `goalTitle`). */
   title: string
   /** Estimated minutes for this item (when known). */
   minutes?: number
@@ -49,8 +49,10 @@ export interface DayPressure {
   /** Per-item breakdown of what was pulled up (one entry per `count`). */
   items: PressureContribution[]
   /**
-   * Tasks/goals whose own dueAt falls on this day. Independent of `count`/heat;
-   * drives the destructive due emphasis (cell border + hover-card section).
+   * Tasks/goals due on this day. Independent of `count`/heat; drives the
+   * destructive due emphasis (cell border + hover-card section). Carries only
+   * today's ACTUAL dues plus the dues the user set by hand — see
+   * {@link computePressureByDay} for why a trigger-derived due is not forecast.
    */
   due?: DueContribution[]
 }
@@ -72,12 +74,20 @@ export interface ComputePressureOptions {
  * - repeat: each repeat ledger's "planned" points within the window (+1).
  * - task trigger: each `task.trigger` fire date within its validity window (+1).
  * - goal trigger: a goal with a trigger forces its tasks to single-run, so the
- *   goal trigger pulls up *each* of the goal's (unfinished) tasks on every fire
- *   date (one `goalTrigger` contribution per task). Mirrors the domain rule in
+ *   goal trigger pulls up *each* of the goal's tasks on every fire date (one
+ *   `goalTrigger` contribution per task). Mirrors the domain rule in
  *   `buildTriggerPlanItems`.
  *
  * Each contributing item is recorded in `items` (one entry per `count`).
  * `minutes` accumulates the contributing tasks' estimated duration (a hint).
+ * What counts as "still pulled up" once a task is done differs per mechanism —
+ * `projectUpcomingTriggerFires` owns that rule.
+ *
+ * The `due` channel is deliberately NOT a forecast: it reports today's actual
+ * dues plus the dues the user set by hand on a task or goal. A trigger goal's
+ * `dueAt` is machine-written on every fire (the day before the next one), so
+ * projecting it forward would pepper the window with red emphasis and drain the
+ * signal — it therefore counts only on the day it is actually due, i.e. today.
  */
 export function computePressureByDay({
   tasks,
@@ -143,7 +153,7 @@ export function computePressureByDay({
     }
   }
 
-  // ── due: tasks/goals whose own dueAt lands in the window ──
+  // ── due: today's actual dues + the user's hand-set dues in the window ──
   // Independent of `count`/heat: drives the destructive due emphasis only.
   const addDue = (dateKey: LocalDateKey, contribution: DueContribution) => {
     const entry = result[dateKey] ?? {
@@ -176,6 +186,11 @@ export function computePressureByDay({
     if (isGoalDone(goal.id, tasks)) continue
     const dateKey = toLocalDateKey(goal.dueAt)
     if (dateKey < todayKey || dateKey > horizonKey) continue
+    // A trigger goal's due is derived, not user intent (enabling a trigger
+    // clears the goal's due and the command layer refuses to set one), and it
+    // moves on every fire. It is a fact today and a forecast on any later day,
+    // so only today's counts.
+    if (goal.trigger != null && dateKey !== todayKey) continue
     addDue(dateKey, {
       kind: "goal",
       id: goal.id,
