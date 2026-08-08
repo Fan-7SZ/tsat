@@ -399,6 +399,20 @@ describe("DefaultPlannerService due-policy forcing (step 3)", () => {
     })
   })
 
+  it("does not re-force a finished overdue standalone task on a new day's replan", () => {
+    const planner = new DefaultPlannerService()
+    const snapshot = emptySnapshot()
+    snapshot.tasks[taskAId] = makeTask(taskAId, goalId, {
+      goalId: undefined,
+      dueAt: new Date("2026-05-12T22:00:00"),
+      total: 1,
+      completedCount: 1,
+    })
+    const output = planner.replan(makeInput(snapshot), "full")
+
+    expect(output.taskRuntime).toEqual({})
+  })
+
   it("keys a counter task's forced run by date-scoped run id", () => {
     const planner = new DefaultPlannerService()
     const snapshot = emptySnapshot()
@@ -673,5 +687,111 @@ describe("DefaultPlannerService focus-set membership (step 4)", () => {
     )
 
     expect(output.taskRuntime[orphanId]).toBeUndefined()
+  })
+})
+
+// ── Invariant: a finished task never enters the plan ─────────────────────────
+// Every auto-scheduling entry path, parameterized. Each case is asserted from
+// both sides: the same construction with the task UNFINISHED must schedule it
+// (proves the path is live, so the finished case can't pass vacuously), and
+// with the task FINISHED must produce zero rows for it.
+describe("DefaultPlannerService invariant: finished tasks never enter the plan", () => {
+  interface Scenario {
+    name: string
+    make: (finished: boolean) => PlannerInput
+  }
+
+  const finishedCounts = (finished: boolean) => ({
+    total: 1,
+    completedCount: finished ? 1 : 0,
+  })
+
+  const scenarios: Scenario[] = [
+    {
+      name: "duePolicy (step 3): plain task due today",
+      make: (finished) => {
+        const snapshot = emptySnapshot()
+        snapshot.tasks[taskAId] = makeTask(taskAId, goalId, {
+          goalId: undefined,
+          dueAt: new Date("2026-05-13T22:00:00"),
+          ...finishedCounts(finished),
+        })
+        return makeInput(snapshot)
+      },
+    },
+    {
+      name: "triggerPolicy (step 2b): trigger fired today",
+      make: (finished) => {
+        const snapshot = emptySnapshot()
+        snapshot.goals[goalId] = goal
+        snapshot.tasks[taskAId] = makeTask(taskAId, goalId, {
+          trigger: { rule: { mode: "daily", interval: 1 } },
+          ...finishedCounts(finished),
+        })
+        snapshot.taskTriggerStates[taskAId] = {
+          taskId: taskAId,
+          lastTriggeredDateKey: todayKey,
+        }
+        return makeInput(snapshot)
+      },
+    },
+    {
+      name: "repeatPolicy (step 2): planned ledger point today",
+      make: (finished) => {
+        const snapshot = emptySnapshot()
+        snapshot.goals[goalId] = goal
+        snapshot.tasks[taskAId] = makeTask(taskAId, goalId, {
+          repeat: { rule: { mode: "daily", interval: 1 } },
+          ...finishedCounts(finished),
+        })
+        snapshot.repeatLedgers[taskAId] = {
+          taskId: taskAId,
+          points: { [todayKey]: "planned" },
+        }
+        return makeInput(snapshot)
+      },
+    },
+    {
+      name: "goalDuePolicy (step 3b): goal due today",
+      make: (finished) => {
+        const snapshot = emptySnapshot()
+        snapshot.goals[goalId] = makeGoal(goalId, {
+          dueAt: new Date("2026-05-13T22:00:00"),
+        })
+        snapshot.tasks[taskAId] = makeTask(taskAId, goalId, {
+          ...finishedCounts(finished),
+        })
+        // Unfinished sibling keeps the goal itself un-done, so the finished
+        // variant still reaches the frontier selection instead of the
+        // isGoalDone short-circuit.
+        snapshot.tasks[taskBId] = makeTask(taskBId, goalId)
+        return makeInput(snapshot)
+      },
+    },
+    {
+      name: "free fill (step 5): manually focused goal",
+      make: (finished) => {
+        const snapshot = emptySnapshot()
+        snapshot.goals[goalId] = goal
+        snapshot.tasks[taskAId] = makeTask(taskAId, goalId, {
+          ...finishedCounts(finished),
+        })
+        snapshot.tasks[taskBId] = makeTask(taskBId, goalId)
+        snapshot.manualFocuses[goalId] = { goalId, dateKey: todayKey }
+        return makeInput(snapshot)
+      },
+    },
+  ]
+
+  const rowsForTarget = (input: PlannerInput) =>
+    Object.values(new DefaultPlannerService().replan(input, "full").taskRuntime)
+      .filter((runtime) => runtime.taskId === taskAId)
+
+  it.each(scenarios)("$name schedules the unfinished task", ({ make }) => {
+    expect(rowsForTarget(make(false)).length).toBeGreaterThan(0)
+  })
+
+  it.each(scenarios)("$name never schedules the finished task", ({ make }) => {
+    expect(rowsForTarget(make(true))).toEqual([])
   })
 })

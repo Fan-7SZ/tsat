@@ -49,6 +49,7 @@ import {
   useNavigate,
   useParams,
   useRouteError,
+  useSearchParams,
 } from "react-router"
 import type { GoalDetailSource } from "@/hooks/use-entities"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -70,6 +71,7 @@ import { useGoalActivities } from "@/hooks/use-activities"
 import { toast } from "sonner"
 import type { GoalID, TaskID } from "@/domain/value-objects/types"
 import { useGoalDetailPageStore } from "@/store/pages/goal-detail-page.store"
+import type { GoalDetailTab } from "@/store/pages/goal-detail-page.store"
 import { useGoalDetailPageVM } from "@/hooks/use-page-view-models"
 import {
   buildDefaultTriggerRule,
@@ -185,8 +187,9 @@ function GoalDetailContent({ vm }: { vm: GoalDetailPageVM }) {
     (s): s is Extract<GoalFocusStatus, { kind: "goalDuePolicy" }> =>
       s.kind === "goalDuePolicy"
   )
-  const currentTab = useGoalDetailPageStore((state) => state.currentTab)
-  const setCurrentTab = useGoalDetailPageStore((state) => state.setCurrentTab)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawTab = searchParams.get("tab")
+  const currentTab: GoalDetailTab = rawTab === "tasks" ? "tasks" : "details"
   const isCreateTaskOpen = useGoalDetailPageStore(
     (state) => state.isCreateTaskOpen
   )
@@ -629,9 +632,15 @@ function GoalDetailContent({ vm }: { vm: GoalDetailPageVM }) {
         className="w-full flex-1 px-4 py-2"
         value={currentTab}
         onValueChange={(nextValue) => {
-          if (nextValue === "details" || nextValue === "tasks") {
-            setCurrentTab(nextValue)
-          }
+          setSearchParams((prev) => {
+            const params = new URLSearchParams(prev)
+            if (nextValue === "details") {
+              params.delete("tab")
+            } else {
+              params.set("tab", nextValue)
+            }
+            return params
+          })
         }}
       >
         <TabsList className="shadow-sm">

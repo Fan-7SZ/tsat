@@ -104,6 +104,21 @@ describe("isTaskForcedToday", () => {
     expect(isTaskForcedToday(repeatTask, policy, now).isForced).toBe(false)
     expect(isTaskForcedToday(triggerTask, policy, now).isForced).toBe(false)
   })
+
+  it("never forces a finished task, even when overdue", () => {
+    const overdue = task("t", {
+      dueAt: new Date("2026-05-10T08:00:00"),
+      total: 1,
+      completedCount: 1,
+    })
+    const dueToday = task("t", {
+      dueAt: new Date("2026-05-13T23:00:00"),
+      total: 3,
+      completedCount: 3,
+    })
+    expect(isTaskForcedToday(overdue, policy, now).isForced).toBe(false)
+    expect(isTaskForcedToday(dueToday, policy, now).isForced).toBe(false)
+  })
 })
 
 describe("isGoalDueForcedToday", () => {
