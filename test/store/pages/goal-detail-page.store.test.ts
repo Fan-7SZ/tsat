@@ -8,9 +8,8 @@ describe("useGoalDetailPageStore", () => {
     useGoalDetailPageStore.getState().resetUiState()
   })
 
-  it("starts on the details tab with everything closed", () => {
+  it("starts with everything closed", () => {
     const state = useGoalDetailPageStore.getState()
-    expect(state.currentTab).toBe("details")
     expect(state.isCreateTaskOpen).toBe(false)
     expect(state.isDeleteOpen).toBe(false)
     expect(state.isTriggerSettingOpen).toBe(false)
@@ -21,7 +20,6 @@ describe("useGoalDetailPageStore", () => {
 
   it("setters update their fields", () => {
     const s = useGoalDetailPageStore.getState()
-    s.setCurrentTab("tasks")
     s.setCreateTaskOpen(true)
     s.setDeleteOpen(true)
     s.setTriggerSettingOpen(true)
@@ -29,7 +27,6 @@ describe("useGoalDetailPageStore", () => {
     s.setTaskFilter("water")
 
     const state = useGoalDetailPageStore.getState()
-    expect(state.currentTab).toBe("tasks")
     expect(state.isCreateTaskOpen).toBe(true)
     expect(state.isDeleteOpen).toBe(true)
     expect(state.isTriggerSettingOpen).toBe(true)
@@ -47,7 +44,6 @@ describe("useGoalDetailPageStore", () => {
 
   it("resetUiState restores every field to its default", () => {
     const s = useGoalDetailPageStore.getState()
-    s.setCurrentTab("tasks")
     s.setCreateTaskOpen(true)
     s.setDeleteTaskTarget("task-1" as TaskID)
     s.setTaskFilter("x")
@@ -55,7 +51,6 @@ describe("useGoalDetailPageStore", () => {
     useGoalDetailPageStore.getState().resetUiState()
 
     const state = useGoalDetailPageStore.getState()
-    expect(state.currentTab).toBe("details")
     expect(state.isCreateTaskOpen).toBe(false)
     expect(state.deleteTaskTarget).toBeNull()
     expect(state.taskFilter).toBe("")

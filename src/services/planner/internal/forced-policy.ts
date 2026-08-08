@@ -7,6 +7,7 @@ import type { GoalBlockingFocusStatus } from "@/domain/derived/GoalFocus"
 import type { PlannerPolicy } from "@/services/planner/types"
 import type { TaskID, TaskRuntimeID } from "@/domain/value-objects/types"
 import { getTaskRuntimeEntries } from "@/utils/task-runtime"
+import { isTaskFinished } from "./planning-helpers"
 
 // ── Task forced-today check ─────────────────────────────────
 
@@ -30,6 +31,10 @@ export function isTaskForcedToday(
   // policy must never pull either in (completing a due-forced repeat run bumps
   // completedCount with no ledger point).
   if (task.trigger != null || task.repeat != null) return { isForced: false }
+  // A finished task has nothing left to schedule; overdue stays overdue
+  // forever (daysUntilDue goes negative), so without this a completed
+  // past-due task would be re-forced into every future day.
+  if (isTaskFinished(task)) return { isForced: false }
   if (task.dueAt == null) return { isForced: false }
   const daysUntilDue = differenceInCalendarDays(task.dueAt, now)
   if (daysUntilDue <= policy.taskForcedTodoDays) {
